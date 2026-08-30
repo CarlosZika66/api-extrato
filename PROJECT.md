@@ -1,6 +1,6 @@
 # API Extrato - Documentação do Projeto
 
-> **Versão:** 3.1.0  
+> **Versão:** 3.2.0  
 > **Última atualização:** 2026-08-30  
 > **Status:** Produção (Vercel)
 
@@ -73,14 +73,15 @@ api-extrato/
 2. **Tenta ambos** e escolhe o que gera mais transações válidas (`_pontuar_resultado`)
 
 3. **Ignora automaticamente:**
-   - Cabeçalhos, rodapés, números de página
-   - "Saldo inicial", "Saldo final", "Entradas:", "Saídas:"
-   - **Caixinha:** `Dinheiro retirado *`, `Dinheiro reservado *`, `Reserva por gastos *`
+    - Cabeçalhos, rodapés, números de página
+    - "Saldo inicial", "Saldo final", "Entradas:", "Saídas:"
+    - **Caixinha:** `Dinheiro retirado *`, `Dinheiro reservado *`, `Reserva por gastos *`
 
 4. **Junta descrições quebradas** entre linhas/páginas
 5. **Reorganiza descrições** que vêm após valores (OCR bagunçado)
 6. **Remove duplicatas** por ID da operação
 7. **Normaliza:** datas (`DD-MM-YYYY`), valores (`R$ -1.234,56`)
+8. **Ordena cronologicamente** (mais antiga → mais recente) via `_ordenar_transacoes_por_data`
 
 ### Funções Principais
 
@@ -91,6 +92,8 @@ api-extrato/
 | `_extrair_linha_layout(linha, data_anterior)` | Extrai 1 transação da linha layout |
 | `_reposicionar_inicio_da_descricao(desc)` | Move prefixo OCR para o final |
 | `_normalizar_valor_layout(valor, desc)` | Converte string bruta → `R$ -X,YY` |
+| `_ordenar_transacoes_por_data(transacoes)` | Ordena lista por data (antiga → nova) |
+| `_parse_data_para_ordenacao(data)` | Converte `DD-MM-YYYY` → `datetime` para sort |
 
 ---
 
@@ -149,6 +152,7 @@ uvicorn api.index:app --reload --port 8000
 
 | Versão | Data | Mudanças |
 |--------|------|----------|
+| **3.2.0** | 2026-08-30 | **Ordenação cronológica** das transações (mais antiga → mais recente) via `_ordenar_transacoes_por_data` e `_parse_data_para_ordenacao`; mantidos todos filtros, dedup e regras de layout |
 | **3.1.0** | 2026-08-30 | Parser layout (colunas), ignora caixinha completa, 8 testes, frontend tabela |
 | 3.0.0 | 2026-08-30 | Parser multi-linha, ignora saldos/reservas, junta descrições quebradas |
 | 2.0.0 | 2026-08-29 | FastAPI + pypdf, CORS, frontend básico |
