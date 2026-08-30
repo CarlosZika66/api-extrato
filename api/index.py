@@ -1,5 +1,6 @@
 import re
 import os
+import unicodedata
 from fastapi import FastAPI, File, UploadFile, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -34,85 +35,284 @@ async def favicon():
     """Evita erro 404 no favicon"""
     return FileResponse(os.path.join(static_dir, "favicon.ico")) if os.path.exists(os.path.join(static_dir, "favicon.ico")) else Response(status_code=204)
 
-def extrair_e_organizar_dados(texto: str):
-    transacoes = []
-    
-    # Padrões mais flexíveis para diferentes formatos de extrato bancário
-    # Padrão 1: Descrição + ID longo + Valor (R$ X,XX) + Saldo (R$ X,XX)
-    padrao1 = re.compile(
-        r'^(?P<descricao>.+?)\s+'
-        r'(?P<id_operacao>\d{8,20})\s+'
-        r'(?P<valor>R\$\s*-?[\d\.,]+)\s+'
-        r'(?P<saldo>R\$\s*-?[\d\.,]+)\s*$',
-        re.MULTILINE
-    )
-    
-    # Padrão 2: Data + Descrição + Valor (sem ID, sem saldo)
-    padrao2 = re.compile(
-        r'^(?P<data>\d{2}[-/]\d{2}[-/]\d{4})\s+'
-        r'(?P<descricao>.+?)\s+'
-        r'(?P<valor>R\$\s*-?[\d\.,]+)\s*$',
-        re.MULTILINE
-    )
-    
-    # Padrão 3: Descrição + Valor (formato simples)
-    padrao3 = re.compile(
-        r'^(?P<descricao>.+?)\s+'
-        r'(?P<valor>R\$\s*-?[\d\.,]+)\s*$',
-        re.MULTILINE
-    )
-    
-    # Padrão para detectar datas isoladas
-    padrao_data = re.compile(r'^(\d{2}[-/]\d{2}[-/]\d{4})\s*$')
-    data_atual = "Não identificada"
+PADRAO_DATA_TEXTO = r"\d{2}[-/]\d{2}[-/]\d{4}"
+PADRAO_DINHEIRO_TEXTO = r"R\$\s*-?\s*(?:\d{1,3}(?:\.\d{3})*|\d+),\d{2}"
 
-    linhas = texto.split('\n')
-    for linha in linhas:
-        linha_limpa = linha.strip()
+PADRAO_TRANSACAO_COMPLETA = re.compile(
+    rf"(?P<data>{PADRAO_DATA_TEXTO})\s+"
+    rf"(?P<descricao>.+?)\s+"
+    rf"(?P<id_operacao>\d{{8,18}})\s+"
+    rf"(?P<valor>{PADRAO_DINHEIRO_TEXTO})\s+"
+    rf"(?P<saldo>{PADRAO_DINHEIRO_TEXTO})(?=\s|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+PADRAO_TRANSACAO_LINHA = re.compile(
+    rf"^(?:(?P<data>{PADRAO_DATA_TEXTO})\s+)?"
+    rf"(?P<descricao>.+?)\s+"
+    rf"(?P<id_operacao>\d{{8,18}})\s+"
+    rf"(?P<valor>{PADRAO_DINHEIRO_TEXTO})"
+    rf"(?:\s+{PADRAO_DINHEIRO_TEXTO})?\s*$",
+    re.IGNORECASE,
+)
+
+PADRAO_TRANSACAO_SIMPLES = re.compile(
+    rf"^(?P<data>{PADRAO_DATA_TEXTO})\s+"
+    rf"(?P<descricao>.+?)\s+"
+    rf"(?P<valor>{PADRAO_DINHEIRO_TEXTO})\s*$",
+    re.IGNORECASE,
+)
+
+DESCRICOES_IGNORADAS = (
+    "saldo inicial",
+    "saldo final",
+    "entradas",
+    "saidas",
+    # "dinheiro retirado" -> MANTER (são saques reais para gastos: PARCELA MOTO, ÁGUA E LUZ, etc.)
+    "dinheiro reservado",  # movimento interno p/ caixinha/emergências
+    "reserva por gastos",  # reserva automática interna
+)
+
+PREFIXOS_DE_TRANSACAO = (
+    "boleto",
+    "compra",
+    "credito",
+    "debito",
+    "deposito",
+    "dinheiro",
+    "estorno",
+    "pagamento",
+    "pix",
+    "recebimento",
+    "rendimentos",
+    "reserva",
+    "saque",
+    "tarifa",
+    "ted",
+    "transferencia",
+)
+
+
+def _sem_acentos(valor: str) -> str:
+    return "".join(
+        caractere
+        for caractere in unicodedata.normalize("NFD", valor)
+        if unicodedata.category(caractere) != "Mn"
+    )
+
+
+def _eh_cabecalho_da_tabela(linha: str) -> bool:
+    linha_normalizada = _sem_acentos(linha).casefold().strip()
+    return (
+        linha_normalizada.startswith("data descricao")
+        and "id da operacao" in linha_normalizada
+        and "valor" in linha_normalizada
+        and "saldo" in linha_normalizada
+    )
+
+
+def _eh_inicio_de_rodape(linha: str) -> bool:
+    linha_normalizada = _sem_acentos(linha).casefold().strip()
+    return linha_normalizada.startswith(
+        (
+            "data de geracao:",
+            "voce tem alguma duvida?",
+            "mercado pago instituicao de pagamento",
+        )
+    )
+
+
+def _eh_linha_informativa(linha: str) -> bool:
+    linha_normalizada = _sem_acentos(linha).casefold().strip()
+
+    if re.fullmatch(r"\d+\s*/\s*\d+", linha_normalizada):
+        return True
+
+    if _eh_cabecalho_da_tabela(linha):
+        return True
+
+    prefixos_informativos = (
+        "extrato de conta",
+        "cpf/cnpj:",
+        "periodo:",
+        "saldo inicial:",
+        "saldo final:",
+        "entradas:",
+        "saidas:",
+        "detalhe dos movimentos",
+    )
+    return linha_normalizada.startswith(prefixos_informativos)
+
+
+def _extrair_secao_de_movimentos(texto: str) -> str:
+    texto_normalizado = re.sub(r"\r\n?", "\n", texto).replace("\xa0", " ")
+    inicio_movimentos = re.search(
+        r"DETALHE\s+DOS\s+MOVIMENTOS", texto_normalizado, re.IGNORECASE
+    )
+
+    if inicio_movimentos:
+        texto_normalizado = texto_normalizado[inicio_movimentos.end():]
+
+    linhas_relevantes = []
+    ignorar_rodape_ate_novo_cabecalho = False
+    for linha in texto_normalizado.splitlines():
+        linha_limpa = re.sub(r"\s+", " ", linha).strip()
         if not linha_limpa:
             continue
-        
-        # Verifica se a linha é apenas uma data
-        match_data = padrao_data.search(linha_limpa)
+
+        if _eh_cabecalho_da_tabela(linha_limpa):
+            ignorar_rodape_ate_novo_cabecalho = False
+            continue
+
+        if _eh_inicio_de_rodape(linha_limpa):
+            ignorar_rodape_ate_novo_cabecalho = True
+            continue
+
+        if ignorar_rodape_ate_novo_cabecalho:
+            continue
+
+        if not _eh_linha_informativa(linha_limpa):
+            linhas_relevantes.append(linha_limpa)
+
+    return "\n".join(linhas_relevantes)
+
+
+def _limpar_descricao(descricao: str) -> str:
+    descricao = re.sub(PADRAO_DATA_TEXTO, " ", descricao)
+    descricao = re.sub(r"\b\d+\s*/\s*\d+\b", " ", descricao)
+    descricao = re.sub(r"\s+", " ", descricao)
+    return descricao.strip(" -|:;")
+
+
+def _normalizar_data(data: str) -> str:
+    return data.replace("/", "-")
+
+
+def _normalizar_valor(valor: str) -> str:
+    valor_sem_prefixo = re.sub(r"^R\$\s*", "", valor.strip(), flags=re.IGNORECASE)
+    valor_sem_prefixo = re.sub(r"\s+", "", valor_sem_prefixo)
+    return f"R$ {valor_sem_prefixo}"
+
+
+def _deve_ignorar_descricao(descricao: str) -> bool:
+    descricao_normalizada = _sem_acentos(descricao).casefold().strip()
+    return any(
+        descricao_normalizada == prefixo
+        or descricao_normalizada.startswith(f"{prefixo} ")
+        or descricao_normalizada.startswith(f"{prefixo}:")
+        for prefixo in DESCRICOES_IGNORADAS
+    )
+
+
+def _parece_inicio_de_transacao(descricao: str) -> bool:
+    descricao_normalizada = _sem_acentos(descricao).casefold().strip()
+    return any(
+        descricao_normalizada == prefixo
+        or descricao_normalizada.startswith(f"{prefixo} ")
+        for prefixo in PREFIXOS_DE_TRANSACAO
+    )
+
+
+def _montar_transacao(data: str, descricao: str, id_operacao: str, valor: str):
+    return {
+        "Data": _normalizar_data(data),
+        "Descrição": descricao,
+        "ID da operação": id_operacao,
+        "Valor": _normalizar_valor(valor),
+    }
+
+
+def _extrair_transacoes_multilinha(texto_movimentos: str):
+    transacoes = []
+    ids_encontrados = set()
+    fim_transacao_anterior = 0
+
+    for match in PADRAO_TRANSACAO_COMPLETA.finditer(texto_movimentos):
+        # O Mercado Pago pode quebrar uma descrição no fim de uma página e
+        # colocar a data somente na página seguinte. O texto entre as duas
+        # transações é, nesse caso, o começo da descrição atual.
+        prefixo_quebrado = _limpar_descricao(
+            texto_movimentos[fim_transacao_anterior:match.start()]
+        )
+        if not _parece_inicio_de_transacao(prefixo_quebrado):
+            prefixo_quebrado = ""
+        descricao = _limpar_descricao(
+            f"{prefixo_quebrado} {match.group('descricao')}"
+        )
+        id_operacao = match.group("id_operacao")
+        fim_transacao_anterior = match.end()
+
+        if (
+            not descricao
+            or id_operacao in ids_encontrados
+            or _deve_ignorar_descricao(descricao)
+        ):
+            continue
+
+        ids_encontrados.add(id_operacao)
+        transacoes.append(
+            _montar_transacao(
+                match.group("data"),
+                descricao,
+                id_operacao,
+                match.group("valor"),
+            )
+        )
+
+    return transacoes
+
+
+def _extrair_transacoes_simples(texto_movimentos: str):
+    transacoes = []
+    ids_encontrados = set()
+    data_atual = "Não identificada"
+
+    for linha in texto_movimentos.splitlines():
+        match_data = re.fullmatch(PADRAO_DATA_TEXTO, linha)
         if match_data:
-            data_atual = match_data.group(1)
+            data_atual = _normalizar_data(match_data.group(0))
             continue
-        
-        # Tenta padrão 1 (completo: desc + ID + valor + saldo)
-        match = padrao1.search(linha_limpa)
+
+        match = PADRAO_TRANSACAO_LINHA.fullmatch(linha)
         if match:
-            dados = match.groupdict()
-            transacoes.append({
-                "Data": data_atual,
-                "Descrição": dados["descricao"].strip(),
-                "ID da operação": dados["id_operacao"].strip(),
-                "Valor": dados["valor"].strip()
-            })
+            descricao = _limpar_descricao(match.group("descricao"))
+            id_operacao = match.group("id_operacao")
+            data = match.group("data") or data_atual
+
+            if (
+                descricao
+                and id_operacao not in ids_encontrados
+                and not _deve_ignorar_descricao(descricao)
+            ):
+                ids_encontrados.add(id_operacao)
+                transacoes.append(
+                    _montar_transacao(data, descricao, id_operacao, match.group("valor"))
+                )
             continue
-            
-        # Tenta padrão 2 (data + desc + valor)
-        match = padrao2.search(linha_limpa)
+
+        match = PADRAO_TRANSACAO_SIMPLES.fullmatch(linha)
         if match:
-            dados = match.groupdict()
-            transacoes.append({
-                "Data": dados["data"],
-                "Descrição": dados["descricao"].strip(),
-                "ID da operação": "N/A",
-                "Valor": dados["valor"].strip()
-            })
-            continue
-            
-        # Tenta padrão 3 (apenas desc + valor)
-        match = padrao3.search(linha_limpa)
-        if match:
-            dados = match.groupdict()
-            transacoes.append({
-                "Data": data_atual,
-                "Descrição": dados["descricao"].strip(),
-                "ID da operação": "N/A",
-                "Valor": dados["valor"].strip()
-            })
-            continue
+            descricao = _limpar_descricao(match.group("descricao"))
+            if descricao and not _deve_ignorar_descricao(descricao):
+                transacoes.append(
+                    _montar_transacao(
+                        match.group("data"),
+                        descricao,
+                        "N/A",
+                        match.group("valor"),
+                    )
+                )
+
+    return transacoes
+
+
+def extrair_e_organizar_dados(texto: str):
+    texto_movimentos = _extrair_secao_de_movimentos(texto)
+    transacoes = _extrair_transacoes_multilinha(texto_movimentos)
+
+    # Mantém compatibilidade com extratos simples, sem a coluna de saldo.
+    if not transacoes:
+        transacoes = _extrair_transacoes_simples(texto_movimentos)
 
     return transacoes
 
