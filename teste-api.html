@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste API Extrato Bancário</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            line-height: 1.5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 { margin: 0 0 8px; font-size: 1.5rem; color: #1a1a2e; }
+        .subtitle { color: #666; margin-bottom: 24px; }
+        
+        .upload-box {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 32px;
+            text-align: center;
+            margin-bottom: 20px;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .upload-box:hover, .upload-box.drag-over {
+            border-color: #0070f3;
+            background: #f0f7ff;
+        }
+        .upload-box input { display: none; }
+        .upload-btn {
+            background: #0070f3;
+            color: white;
+            border: none;
+            padding: 12px 28px;
+            font-size: 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .upload-btn:hover:not(:disabled) { background: #0056cc; }
+        .upload-btn:disabled { background: #ccc; cursor: not-allowed; }
+        
+        .status { 
+            min-height: 24px; 
+            margin: 16px 0; 
+            font-weight: 500; 
+            padding: 12px;
+            border-radius: 6px;
+            display: none;
+        }
+        .status.loading { display: block; color: #0070f3; background: #eef4ff; }
+        .status.success { display: block; color: #059669; background: #ecfdf5; }
+        .status.error { display: block; color: #dc2626; background: #fef2f2; }
+        .status.warning { display: block; color: #92400e; background: #fffbeb; }
+        
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin: 20px 0;
+            padding: 16px;
+            background: #f8fafc;
+            border-radius: 8px;
+            display: none;
+        }
+        .summary-item { text-align: center; }
+        .summary-label { 
+            font-size: 0.75rem; 
+            text-transform: uppercase; 
+            color: #64748b; 
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .summary-value { 
+            font-size: 1.5rem; 
+            font-weight: 700; 
+            color: #1a1a2e;
+            font-family: monospace;
+        }
+        .summary-value.positive { color: #059669; }
+        .summary-value.negative { color: #dc2626; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 0.875rem; display: none; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; color: #475569; position: sticky; top: 0; }
+        tr:hover td { background: #f8fafc; }
+        .col-data { width: 110px; white-space: nowrap; }
+        .col-desc { min-width: 280px; }
+        .col-id { width: 160px; font-family: monospace; font-size: 0.8rem; color: #64748b; }
+        .col-valor { width: 120px; text-align: right; font-weight: 600; font-family: monospace; }
+        .valor-pos { color: #059669; }
+        .valor-neg { color: #dc2626; }
+        
+        .empty-state { text-align: center; padding: 40px 20px; color: #94a3b8; display: none; }
+        .empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.5; }
+        
+        .json-toggle { margin-top: 16px; }
+        .json-toggle summary { cursor: pointer; color: #0070f3; font-weight: 500; }
+        .json-toggle pre { 
+            background: #1e293b; 
+            color: #e2e8f0; 
+            padding: 16px; 
+            border-radius: 6px; 
+            overflow-x: auto; 
+            font-size: 0.75rem; 
+            line-height: 1.5;
+            max-height: 400px;
+        }
+        
+        @media (max-width: 640px) {
+            th, td { padding: 8px; font-size: 0.8rem; }
+            .col-id { display: none; }
+            th:nth-child(3), td:nth-child(3) { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📄 Teste API Extrato Bancário</h1>
+        <p class="subtitle">Selecione um PDF de extrato (Mercado Pago) para processar e visualizar as transações extraídas.</p>
+        
+        <div class="upload-box" id="uploadBox">
+            <input type="file" id="pdfInput" accept="application/pdf">
+            <button class="upload-btn" id="btnProcessar" onclick="document.getElementById('pdfInput').click()">
+                📁 Selecionar PDF
+            </button>
+            <p style="margin: 12px 0 0; color: #94a3b8; font-size: 0.875rem;">Ou arraste o arquivo aqui</p>
+        </div>
+        
+        <div class="status loading" id="status"></div>
+        
+        <div class="summary" id="resumo">
+            <div class="summary-item">
+                <div class="summary-label">Total Transações</div>
+                <div class="summary-value" id="totalTransacoes">0</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">Entradas (Créditos)</div>
+                <div class="summary-value positive" id="totalCreditos">R$ 0,00</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">Saídas (Débitos)</div>
+                <div class="summary-value negative" id="totalDebitos">R$ 0,00</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">Saldo Líquido</div>
+                <div class="summary-value" id="saldoLiquido">R$ 0,00</div>
+            </div>
+        </div>
+        
+        <table id="tabelaTransacoes">
+            <thead>
+                <tr>
+                    <th class="col-data">Data</th>
+                    <th class="col-desc">Descrição</th>
+                    <th class="col-id">ID Operação</th>
+                    <th class="col-valor">Valor</th>
+                </tr>
+            </thead>
+            <tbody id="tbodyTransacoes"></tbody>
+        </table>
+        
+        <div class="empty-state" id="emptyState">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            <p>Nenhuma transação encontrada no PDF.</p>
+        </div>
+        
+        <details class="json-toggle" id="jsonToggle" style="display: none;">
+            <summary>🔍 Ver JSON bruto da resposta</summary>
+            <pre id="jsonRaw"></pre>
+        </details>
+    </div>
+
+    <script>
+        const API_URL = '/processar-pdf';
+        let transacoes = [];
+        
+        const uploadBox = document.getElementById('uploadBox');
+        const pdfInput = document.getElementById('pdfInput');
+        const btnProcessar = document.getElementById('btnProcessar');
+        const statusEl = document.getElementById('status');
+        const resumoEl = document.getElementById('resumo');
+        const tabelaEl = document.getElementById('tabelaTransacoes');
+        const tbodyEl = document.getElementById('tbodyTransacoes');
+        const emptyStateEl = document.getElementById('emptyState');
+        const jsonToggleEl = document.getElementById('jsonToggle');
+        const jsonRawEl = document.getElementById('jsonRaw');
+        
+        // Drag & drop
+        ['dragenter', 'dragover'].forEach(evt => 
+            uploadBox.addEventListener(evt, e => { e.preventDefault(); uploadBox.classList.add('drag-over'); })
+        );
+        ['dragleave', 'drop'].forEach(evt => 
+            uploadBox.addEventListener(evt, e => { e.preventDefault(); uploadBox.classList.remove('drag-over'); })
+        );
+        uploadBox.addEventListener('drop', e => {
+            const file = e.dataTransfer.files[0];
+            if (file && file.type === 'application/pdf') {
+                pdfInput.files = e.dataTransfer.files;
+                processarPDF();
+            }
+        });
+        
+        pdfInput.addEventListener('change', () => {
+            if (pdfInput.files.length > 0) processarPDF();
+        });
+        
+        async function processarPDF() {
+            const file = pdfInput.files[0];
+            if (!file) return;
+            
+            // Reset UI
+            btnProcessar.disabled = true;
+            btnProcessar.textContent = 'Processando...';
+            statusEl.className = 'status loading';
+            statusEl.textContent = '⏳ Enviando e processando PDF...';
+            resumoEl.style.display = 'none';
+            tabelaEl.style.display = 'none';
+            emptyStateEl.style.display = 'none';
+            jsonToggleEl.style.display = 'none';
+            tbodyEl.innerHTML = '';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch(API_URL, { method: 'POST', body: formData });
+                const data = await response.json();
+                
+                if (!response.ok) throw new Error(data.detail || 'Erro na requisição');
+                
+                transacoes = data.transacoes || [];
+                
+                // Status
+                if (data.aviso) {
+                    statusEl.className = 'status warning';
+                    statusEl.textContent = '⚠️ ' + data.aviso;
+                } else {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = `✅ Sucesso! ${data.total_transacoes} transação(ões) encontrada(s).`;
+                }
+                
+                if (transacoes.length === 0) {
+                    emptyStateEl.style.display = 'block';
+                    return;
+                }
+                
+                // Resumo
+                let creditos = 0, debitos = 0;
+                transacoes.forEach(t => {
+                    const v = parseValor(t.Valor);
+                    if (v >= 0) creditos += v;
+                    else debitos += Math.abs(v);
+                });
+                
+                document.getElementById('totalTransacoes').textContent = transacoes.length;
+                document.getElementById('totalCreditos').textContent = formatarMoeda(creditos);
+                document.getElementById('totalDebitos').textContent = formatarMoeda(debitos);
+                const liquido = creditos - debitos;
+                document.getElementById('saldoLiquido').textContent = formatarMoeda(liquido);
+                document.getElementById('saldoLiquido').className = 'summary-value ' + (liquido >= 0 ? 'positive' : 'negative');
+                resumoEl.style.display = 'grid';
+                
+                // Tabela
+                renderizarTabela(transacoes);
+                tabelaEl.style.display = 'table';
+                
+                // JSON bruto
+                jsonRawEl.textContent = JSON.stringify(data, null, 2);
+                jsonToggleEl.style.display = 'block';
+                
+            } catch (err) {
+                console.error(err);
+                statusEl.className = 'status error';
+                statusEl.textContent = '❌ Erro: ' + err.message;
+            } finally {
+                btnProcessar.disabled = false;
+                btnProcessar.textContent = '📁 Selecionar PDF';
+            }
+        }
+        
+        function renderizarTabela(transacoes) {
+            tbodyEl.innerHTML = '';
+            transacoes.forEach(t => {
+                const valorNum = parseValor(t.Valor);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="col-data">${escapeHtml(t.Data)}</td>
+                    <td class="col-desc">${escapeHtml(t.Descrição)}</td>
+                    <td class="col-id">${escapeHtml(t['ID da operação'])}</td>
+                    <td class="col-valor ${valorNum >= 0 ? 'valor-pos' : 'valor-neg'}">${valorNum >= 0 ? '+' : ''}${escapeHtml(t.Valor)}</td>
+                `;
+                tbodyEl.appendChild(tr);
+            });
+        }
+        
+        function parseValor(valorStr) {
+            return parseFloat(valorStr.replace('R$', '').replace(/\./g, '').replace(',', '.').trim());
+        }
+        
+        function formatarMoeda(valor) {
+            return 'R$ ' + valor.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

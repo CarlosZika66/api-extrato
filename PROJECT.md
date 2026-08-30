@@ -1,6 +1,6 @@
 # API Extrato - Documentação do Projeto
 
-> **Versão:** 3.2.1
+> **Versão:** 3.3.0
 > **Última atualização:** 2026-08-30
 > **Status:** Produção (Vercel)
 
@@ -52,7 +52,8 @@ API em **FastAPI** para extrair transações de extratos bancários em PDF (Merc
 api-extrato/
 ├── api/
 │   └── index.py          # FastAPI app + parser completo
-├── index.html            # Frontend (tabela + filtros + resumo)
+├── index.html            # Frontend principal (tabela + filtros + resumo)
+├── teste-api.html        # HTML simples para teste da API
 ├── vercel.json           # Config deploy Vercel (Python)
 ├── requirements.txt      # Dependências Python
 ├── tests/
@@ -153,6 +154,7 @@ uvicorn api.index:app --reload --port 8000
 
 | Versão | Data | Mudanças |
 |--------|------|----------|
+| **3.3.0** | 2026-08-30 | **Melhorias no parser layout:** suporte a datas compactas (DDMMYYYY), detecção de cabeçalho de tabela como início, continuação de descrição em linhas indentadas; **Correções:** ID layout mínimo 10 dígitos (evita capturar datas), ordem de correções OCR preserva "Pagamento de parcela"; **Novo:** scoring balanceado, logging, health check `/health`, HTML de teste `teste-api.html` |
 | **3.2.1** | 2026-08-30 | Inverte a ordenação cronológica para exibir a transação mais recente primeiro; datas inválidas permanecem no final; adiciona teste entre meses e anos diferentes |
 | **3.2.0** | 2026-08-30 | **Ordenação cronológica** das transações (mais antiga → mais recente) via `_ordenar_transacoes_por_data` e `_parse_data_para_ordenacao`; mantidos todos filtros, dedup e regras de layout |
 | **3.1.0** | 2026-08-30 | Parser layout (colunas), ignora caixinha completa, 8 testes, frontend tabela |
@@ -172,7 +174,8 @@ uvicorn api.index:app --reload --port 8000
 
 **Arquivos que provavelmente vão mudar:**
 - `api/index.py` → parser / novas regras de filtro
-- `index.html` → UI / novos campos na resposta
+- `index.html` → UI principal / novos campos na resposta
+- `teste-api.html` → HTML de teste simples
 - `tests/test_parser.py` → novos casos de teste
 - `requirements.txt` → novas dependências
 
