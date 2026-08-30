@@ -1,6 +1,6 @@
 import unittest
 
-from api.index import extrair_e_organizar_dados
+from api.index import _extrair_transacoes_layout, extrair_e_organizar_dados
 
 
 class ExtratoParserTests(unittest.TestCase):
@@ -27,14 +27,10 @@ class ExtratoParserTests(unittest.TestCase):
 
         transacoes = extrair_e_organizar_dados(texto)
 
-        # Agora mantemos "Dinheiro retirado" (são saques reais), mas ignoramos
-        # "Reserva por gastos" e "Dinheiro reservado" (movimentos internos)
-        self.assertEqual(len(transacoes), 2)
-        descricoes = [t["Descrição"] for t in transacoes]
-        self.assertIn("Pagamento Cartão de crédito", descricoes)
-        self.assertIn("Dinheiro retirado PARCELA MOTO", descricoes)
-        self.assertNotIn("Reserva por gastos", str(descricoes))
-        self.assertNotIn("Dinheiro reservado", str(descricoes))
+        # Agora ignoramos "Dinheiro retirado" (caixinha), "Reserva por gastos" e "Dinheiro reservado"
+        self.assertEqual(len(transacoes), 1)
+        self.assertEqual(transacoes[0]["Descrição"], "Pagamento Cartão de crédito")
+        self.assertEqual(transacoes[0]["Valor"], "R$ -750,00")
 
     def test_junta_descricao_quebrada_em_varias_linhas(self):
         texto = """
@@ -105,6 +101,60 @@ class ExtratoParserTests(unittest.TestCase):
         """
 
         transacoes = extrair_e_organizar_dados(texto)
+
+        self.assertEqual(len(transacoes), 2)
+        self.assertEqual(transacoes[1]["Descrição"], "Pagamento Cartão de crédito")
+
+    def test_layout_por_colunas_separa_transacoes_e_continuacoes(self):
+        texto = """
+Data           Descrição                           ID da operação        Valor       Saldo
+
+04-08-2026     Pagamento de parcela                172125543056          R$ -198,36  R$ 13,24
+               Empréstimos Mercado Pago
+
+04-08-2026     Reserva por gastos PARCELA          171225406789          R$ -1,00    R$ 12,24
+               MOTO
+
+05-08-2026     Pix enviado Laudecy Urenia          172148481592          R$ -177,54  R$ 11,24
+               Scarparo
+        """
+
+        transacoes = _extrair_transacoes_layout(texto)
+
+        self.assertEqual(len(transacoes), 2)
+        self.assertEqual(
+            transacoes[0]["Descrição"],
+            "Pagamento de parcela Empréstimos Mercado Pago",
+        )
+        self.assertEqual(
+            transacoes[1]["Descrição"], "Pix enviado Laudecy Urenia Scarparo"
+        )
+
+    def test_layout_reorganiza_descricao_extraida_depois_dos_valores(self):
+        texto = """
+Data Descrição ID da operação Valor Saldo
+28082026 (1o DE GAS LTDA 175166885765 R$750,00 R$754,56 Pix recebido ENZO
+        """
+
+        transacoes = _extrair_transacoes_layout(texto)
+
+        self.assertEqual(len(transacoes), 1)
+        self.assertEqual(
+            transacoes[0]["Descrição"],
+            "Pix recebido ENZO COMERCIO DE GAS LTDA",
+        )
+
+    def test_layout_nao_anexa_numero_da_pagina(self):
+        texto = """
+Data Descrição ID da operação Valor Saldo
+28082026 Pagamento Cartão de crédito 175169136617 R$-150,00 R$609,57
+12113
+<<<QUEBRA_DE_PAGINA>>>
+Data Descrição ID da operação Valor Saldo
+28082026 Pagamento Cartão de crédito 176116837132 R$-169,00 R$439,57
+        """
+
+        transacoes = _extrair_transacoes_layout(texto)
 
         self.assertEqual(len(transacoes), 2)
         self.assertEqual(transacoes[1]["Descrição"], "Pagamento Cartão de crédito")

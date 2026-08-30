@@ -63,12 +63,17 @@ PADRAO_TRANSACAO_SIMPLES = re.compile(
     re.IGNORECASE,
 )
 
+MARCADOR_QUEBRA_PAGINA = "<<<QUEBRA_DE_PAGINA>>>"
+PADRAO_DATA_LAYOUT = re.compile(r"(?<!\d)(\d{2}[-/]?\d{2}[-/]?\d{4})(?!\d)")
+PADRAO_ID_LAYOUT = re.compile(r"(?<!\d)(\d{10,18})(?!\d)")
+PADRAO_DINHEIRO_LAYOUT = re.compile(r"R\$\s*-?\s*[\d.,]+", re.IGNORECASE)
+
 DESCRICOES_IGNORADAS = (
     "saldo inicial",
     "saldo final",
     "entradas",
     "saidas",
-    # "dinheiro retirado" -> MANTER (são saques reais para gastos: PARCELA MOTO, ÁGUA E LUZ, etc.)
+    "dinheiro retirado",  # caixinha - ignorar todas
     "dinheiro reservado",  # movimento interno p/ caixinha/emergências
     "reserva por gastos",  # reserva automática interna
 )
@@ -104,8 +109,9 @@ def _sem_acentos(valor: str) -> str:
 def _eh_cabecalho_da_tabela(linha: str) -> bool:
     linha_normalizada = _sem_acentos(linha).casefold().strip()
     return (
-        linha_normalizada.startswith("data descricao")
-        and "id da operacao" in linha_normalizada
+        linha_normalizada.startswith("data")
+        and "descri" in linha_normalizada
+        and "opera" in linha_normalizada
         and "valor" in linha_normalizada
         and "saldo" in linha_normalizada
     )
@@ -185,6 +191,12 @@ def _limpar_descricao(descricao: str) -> str:
 
 
 def _normalizar_data(data: str) -> str:
+    somente_digitos = re.sub(r"\D", "", data)
+    if len(somente_digitos) == 8:
+        return (
+            f"{somente_digitos[:2]}-{somente_digitos[2:4]}-"
+            f"{somente_digitos[4:]}"
+        )
     return data.replace("/", "-")
 
 
@@ -192,6 +204,70 @@ def _normalizar_valor(valor: str) -> str:
     valor_sem_prefixo = re.sub(r"^R\$\s*", "", valor.strip(), flags=re.IGNORECASE)
     valor_sem_prefixo = re.sub(r"\s+", "", valor_sem_prefixo)
     return f"R$ {valor_sem_prefixo}"
+
+
+def _corrigir_texto_ocr(texto: str) -> str:
+    texto = texto.replace("\ufffd", "")
+    correcoes = (
+        (r"\bCarto\b", "Cartão"),
+        (r"\bcrdito\b", "crédito"),
+        (r"\bEmprstimos\b", "Empréstimos"),
+        (r"\bEmergncias\b", "Emergências"),
+        (r"\bDepsito\b", "Depósito"),
+        (r"\bGR Pix\b", "QR Pix"),
+        (r"\b[vm]oto\b", "MOTO"),
+        (r"\(1o\s+DE\s+GAS\s+LTDA", "COMERCIO DE GAS LTDA"),
+    )
+    for padrao, substituicao in correcoes:
+        texto = re.sub(padrao, substituicao, texto, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", texto).strip(" -|:;_\\")
+
+
+def _descricao_indica_saida(descricao: str) -> bool:
+    descricao_normalizada = _sem_acentos(descricao).casefold().strip()
+    return descricao_normalizada.startswith(
+        (
+            "boleto",
+            "compra",
+            "debito",
+            "pagamento",
+            "pix enviado",
+            "saque",
+            "tarifa",
+            "ted enviado",
+            "transferencia enviada",
+        )
+    )
+
+
+def _normalizar_valor_layout(valor: str, descricao: str) -> str:
+    negativo_explicito = "-" in valor
+    numero = re.sub(r"[^\d,.]", "", valor)
+
+    if not numero:
+        return "R$ 0,00"
+
+    if "," in numero:
+        inteiro, centavos = numero.rsplit(",", 1)
+        inteiro = re.sub(r"\D", "", inteiro) or "0"
+        centavos = re.sub(r"\D", "", centavos)[:2].ljust(2, "0")
+    elif "." in numero and len(numero.rsplit(".", 1)[1]) == 2:
+        inteiro, centavos = numero.rsplit(".", 1)
+        inteiro = re.sub(r"\D", "", inteiro) or "0"
+        centavos = re.sub(r"\D", "", centavos)[:2].ljust(2, "0")
+    else:
+        digitos = re.sub(r"\D", "", numero)
+        if len(digitos) <= 2:
+            inteiro = "0"
+            centavos = digitos.rjust(2, "0")
+        else:
+            inteiro = digitos[:-2]
+            centavos = digitos[-2:]
+
+    inteiro_formatado = f"{int(inteiro):,}".replace(",", ".")
+    negativo = negativo_explicito or _descricao_indica_saida(descricao)
+    sinal = "-" if negativo else ""
+    return f"R$ {sinal}{inteiro_formatado},{centavos}"
 
 
 def _deve_ignorar_descricao(descricao: str) -> bool:
@@ -211,6 +287,199 @@ def _parece_inicio_de_transacao(descricao: str) -> bool:
         or descricao_normalizada.startswith(f"{prefixo} ")
         for prefixo in PREFIXOS_DE_TRANSACAO
     )
+
+
+def _reposicionar_inicio_da_descricao(descricao: str) -> str:
+    descricao = _corrigir_texto_ocr(descricao)
+    descricao_normalizada = _sem_acentos(descricao).casefold()
+    posicoes = [
+        descricao_normalizada.find(prefixo)
+        for prefixo in PREFIXOS_DE_TRANSACAO
+        if descricao_normalizada.find(prefixo) >= 0
+    ]
+
+    if not posicoes:
+        return descricao
+
+    inicio = min(posicoes)
+    if inicio == 0:
+        return descricao
+
+    trecho_inicial = descricao[:inicio].strip(" -|:;_\\")
+    descricao_principal = descricao[inicio:].strip()
+
+    # Alguns PDFs com OCR deslocam uma palavra curta (por exemplo, MOTO ou
+    # SUTIL) para antes do tipo da transação. Ela pertence ao final.
+    if trecho_inicial and len(trecho_inicial.split()) <= 5:
+        return f"{descricao_principal} {trecho_inicial}".strip()
+    return descricao_principal
+
+
+def _extrair_linha_layout(linha: str, data_anterior: str | None):
+    id_match = PADRAO_ID_LAYOUT.search(linha)
+    if not id_match:
+        return None
+
+    valores = [
+        match
+        for match in PADRAO_DINHEIRO_LAYOUT.finditer(linha)
+        if match.start() > id_match.end()
+    ]
+    if not valores:
+        return None
+
+    data_match = PADRAO_DATA_LAYOUT.search(linha[:id_match.start()])
+    data = _normalizar_data(data_match.group(1)) if data_match else data_anterior
+    if not data:
+        return None
+
+    caracteres = list(linha)
+    intervalos = [(id_match.start(), id_match.end())]
+    if data_match:
+        intervalos.append((data_match.start(), data_match.end()))
+    intervalos.extend((match.start(), match.end()) for match in valores)
+
+    for inicio, fim in intervalos:
+        caracteres[inicio:fim] = " " * (fim - inicio)
+
+    descricao = "".join(caracteres)
+    descricao = re.sub(r"\$\s*[\d.,]+", " ", descricao)
+    descricao = re.sub(r"[�—–]+", " ", descricao)
+    descricao = _reposicionar_inicio_da_descricao(descricao)
+
+    if not descricao:
+        return None
+
+    return {
+        "data": data,
+        "descricao_partes": [descricao],
+        "id_operacao": id_match.group(1),
+        "valor_bruto": valores[0].group(0),
+    }
+
+
+def _limpar_fragmento_layout(linha: str) -> str:
+    linha = re.sub(r"[�—–]+", " ", linha)
+    linha = _corrigir_texto_ocr(linha)
+
+    if (
+        not linha
+        or _eh_linha_informativa(linha)
+        or re.fullmatch(r"[a-z]?\d{1,5}(?:/\d{1,3})?", linha, re.IGNORECASE)
+    ):
+        return ""
+    return linha
+
+
+def _extrair_transacoes_layout(texto_layout: str):
+    transacoes = []
+    ids_encontrados = set()
+    transacao_atual = None
+    fragmentos_pendentes = []
+    data_anterior = None
+    linhas_em_branco = 0
+    dentro_dos_movimentos = False
+    ignorar_rodape = False
+
+    def finalizar_transacao_atual():
+        nonlocal transacao_atual
+        if not transacao_atual:
+            return
+
+        descricao = _reposicionar_inicio_da_descricao(
+            " ".join(transacao_atual["descricao_partes"])
+        )
+        id_operacao = transacao_atual["id_operacao"]
+
+        if (
+            descricao
+            and id_operacao not in ids_encontrados
+            and not _deve_ignorar_descricao(descricao)
+        ):
+            ids_encontrados.add(id_operacao)
+            transacoes.append(
+                _montar_transacao(
+                    transacao_atual["data"],
+                    descricao,
+                    id_operacao,
+                    _normalizar_valor_layout(
+                        transacao_atual["valor_bruto"], descricao
+                    ),
+                )
+            )
+        transacao_atual = None
+
+    for linha_original in texto_layout.splitlines():
+        linha = linha_original.rstrip()
+        linha_limpa = linha.strip()
+
+        if linha_limpa == MARCADOR_QUEBRA_PAGINA:
+            finalizar_transacao_atual()
+            linhas_em_branco = 2
+            ignorar_rodape = False
+            continue
+
+        if not linha_limpa:
+            linhas_em_branco += 1
+            continue
+
+        linha_normalizada = _sem_acentos(linha_limpa).casefold()
+        if "detalhe dos movimentos" in linha_normalizada:
+            dentro_dos_movimentos = True
+            fragmentos_pendentes.clear()
+            linhas_em_branco = 0
+            continue
+
+        if _eh_cabecalho_da_tabela(linha_limpa):
+            dentro_dos_movimentos = True
+            ignorar_rodape = False
+            linhas_em_branco = 0
+            continue
+
+        if not dentro_dos_movimentos:
+            continue
+
+        if _eh_inicio_de_rodape(linha_limpa):
+            ignorar_rodape = True
+            continue
+        if ignorar_rodape:
+            continue
+
+        nova_transacao = _extrair_linha_layout(linha, data_anterior)
+        if nova_transacao:
+            finalizar_transacao_atual()
+            if fragmentos_pendentes:
+                nova_transacao["descricao_partes"] = [
+                    *fragmentos_pendentes,
+                    *nova_transacao["descricao_partes"],
+                ]
+                fragmentos_pendentes.clear()
+            transacao_atual = nova_transacao
+            data_anterior = nova_transacao["data"]
+            linhas_em_branco = 0
+            continue
+
+        fragmento = _limpar_fragmento_layout(linha_limpa)
+        if not fragmento:
+            continue
+
+        if fragmentos_pendentes:
+            fragmentos_pendentes.append(fragmento)
+        elif transacao_atual and linhas_em_branco == 0:
+            transacao_atual["descricao_partes"].append(fragmento)
+        else:
+            fragmentos_pendentes.append(fragmento)
+        linhas_em_branco = 0
+
+    finalizar_transacao_atual()
+    return transacoes
+
+
+def _pontuar_resultado(transacoes) -> int:
+    descricoes_excessivas = sum(
+        len(transacao["Descrição"]) > 200 for transacao in transacoes
+    )
+    return len(transacoes) * 10 - descricoes_excessivas * 500
 
 
 def _montar_transacao(data: str, descricao: str, id_operacao: str, valor: str):
@@ -323,11 +592,22 @@ async def processar_pdf(file: UploadFile = File(...)):
 
     try:
         reader = PdfReader(file.file)
-        texto_completo = ""
+        paginas_texto_simples = []
+        paginas_texto_layout = []
         for page in reader.pages:
-            t = page.extract_text()
-            if t:
-                texto_completo += t + "\n"
+            texto_simples = page.extract_text() or ""
+            paginas_texto_simples.append(texto_simples)
+
+            try:
+                texto_layout = page.extract_text(extraction_mode="layout") or ""
+            except (TypeError, ValueError):
+                texto_layout = texto_simples
+            paginas_texto_layout.append(texto_layout)
+
+        texto_completo = "\n".join(paginas_texto_simples)
+        texto_layout_completo = (
+            f"\n{MARCADOR_QUEBRA_PAGINA}\n".join(paginas_texto_layout)
+        )
 
         if not texto_completo.strip():
             return {
@@ -336,7 +616,12 @@ async def processar_pdf(file: UploadFile = File(...)):
                 "aviso": "Não foi possível extrair texto digital do PDF (pode ser uma imagem/escaneado)."
             }
 
-        dados_formatados = extrair_e_organizar_dados(texto_completo)
+        dados_texto_simples = extrair_e_organizar_dados(texto_completo)
+        dados_layout = _extrair_transacoes_layout(texto_layout_completo)
+        dados_formatados = max(
+            (dados_texto_simples, dados_layout),
+            key=_pontuar_resultado,
+        )
         
         return {
             "total_transacoes": len(dados_formatados),
