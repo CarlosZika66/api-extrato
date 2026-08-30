@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste da API de Extrato</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 700px;
+            margin: 40px auto;
+            padding: 20px;
+            background-color: #f4f6f8;
+        }
+
+        .container {
+            background: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        input[type="file"] {
+            margin-bottom: 15px;
+        }
+
+        button {
+            background-color: #0070f3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+        }
+
+        .card-transacao {
+            background: #f9f9f9;
+            border-left: 4px solid #0070f3;
+            padding: 10px 15px;
+            margin-top: 10px;
+            border-radius: 4px;
+        }
+
+        #status {
+            margin-top: 15px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h2>Leitor de Extrato PDF</h2>
+        <p>Selecione seu extrato bancário em PDF para processar via API hospedada na Vercel:</p>
+
+        <input type="file" id="pdfInput" accept="application/pdf"><br>
+        <button id="btnEnviar" onclick="enviarPDF()">Processar PDF</button>
+
+        <div id="status"></div>
+        <div id="resultado"></div>
+    </div>
+
+    <script>
+        // Usa URL relativa para funcionar em qualquer deploy (localhost ou Vercel)
+        const URL_DA_SUA_API = "/processar-pdf";
+
+        async function enviarPDF() {
+            const input = document.getElementById('pdfInput');
+            const statusDiv = document.getElementById('status');
+            const resultadoDiv = document.getElementById('resultado');
+            const btn = document.getElementById('btnEnviar');
+
+            if (!input.files || input.files.length === 0) {
+                alert("Por favor, selecione um arquivo PDF primeiro!");
+                return;
+            }
+
+            const file = input.files[0];
+            const formData = new FormData();
+            formData.append("file", file);
+
+            statusDiv.innerText = "Enviando e processando PDF na Vercel...";
+            resultadoDiv.innerHTML = "";
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(URL_DA_SUA_API, {
+                    method: "POST",
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error("Erro na requisição: " + response.statusText);
+                }
+
+                const data = await response.json();
+                statusDiv.innerText = `Processado com sucesso! Total de transações encontradas: ${data.total_transacoes}`;
+
+                data.transacoes.forEach(t => {
+                    const card = document.createElement('div');
+                    card.className = 'card-transacao';
+                    card.innerHTML = `
+                    <strong>Data:</strong> ${t.Data} | 
+                    <strong>Descrição:</strong> ${t['Descrição']} | 
+                    <strong>ID da operação:</strong> ${t['ID da operação']} | 
+                    <strong>VALOR:</strong> ${t.Valor}
+                `;
+                    resultadoDiv.appendChild(card);
+                });
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.innerText = "Ocorreu um erro ao processar o arquivo.";
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+
+</body>
+
+</html>
