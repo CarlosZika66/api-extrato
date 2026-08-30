@@ -53,6 +53,15 @@ async def favicon():
     return Response(status_code=204)
 
 
+@app.get("/teste-api.html")
+async def serve_teste_api():
+    """Serve o HTML de teste da API"""
+    teste_path = os.path.join(static_dir, "teste-api.html")
+    if os.path.exists(teste_path):
+        return FileResponse(teste_path)
+    return {"error": "teste-api.html não encontrado"}, 404
+
+
 # ==================== PADRÕES REGEX ====================
 
 PADRAO_DATA_TEXTO = r"\d{2}[-/]\d{2}[-/]\d{4}"
