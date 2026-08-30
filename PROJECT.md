@@ -1,7 +1,7 @@
 # API Extrato - Documentação do Projeto
 
-> **Versão:** 3.2.0  
-> **Última atualização:** 2026-08-30  
+> **Versão:** 3.2.1
+> **Última atualização:** 2026-08-30
 > **Status:** Produção (Vercel)
 
 ---
@@ -56,7 +56,7 @@ api-extrato/
 ├── vercel.json           # Config deploy Vercel (Python)
 ├── requirements.txt      # Dependências Python
 ├── tests/
-│   └── test_parser.py    # 8 testes unitários (pytest/unittest)
+│   └── test_parser.py    # 9 testes unitários (pytest/unittest)
 └── PROJECT.md            # Este arquivo
 ```
 
@@ -81,7 +81,7 @@ api-extrato/
 5. **Reorganiza descrições** que vêm após valores (OCR bagunçado)
 6. **Remove duplicatas** por ID da operação
 7. **Normaliza:** datas (`DD-MM-YYYY`), valores (`R$ -1.234,56`)
-8. **Ordena cronologicamente** (mais antiga → mais recente) via `_ordenar_transacoes_por_data`
+8. **Ordena cronologicamente** (mais recente → mais antiga) via `_ordenar_transacoes_por_data`
 
 ### Funções Principais
 
@@ -92,7 +92,7 @@ api-extrato/
 | `_extrair_linha_layout(linha, data_anterior)` | Extrai 1 transação da linha layout |
 | `_reposicionar_inicio_da_descricao(desc)` | Move prefixo OCR para o final |
 | `_normalizar_valor_layout(valor, desc)` | Converte string bruta → `R$ -X,YY` |
-| `_ordenar_transacoes_por_data(transacoes)` | Ordena lista por data (antiga → nova) |
+| `_ordenar_transacoes_por_data(transacoes)` | Ordena lista por data (nova → antiga) |
 | `_parse_data_para_ordenacao(data)` | Converte `DD-MM-YYYY` → `datetime` para sort |
 
 ---
@@ -116,7 +116,8 @@ cd api-extrato
 python -m unittest discover -s tests -v
 ```
 
-**8 testes cobrindo:**
+**9 testes cobrindo:**
+- Ordena datas da mais recente para a mais antiga, incluindo meses/anos diferentes
 - Ignora saldos/resumos/caixinha
 - Junta descrições multi-linha
 - Junta descrições entre páginas (sem repetir data)
@@ -152,6 +153,7 @@ uvicorn api.index:app --reload --port 8000
 
 | Versão | Data | Mudanças |
 |--------|------|----------|
+| **3.2.1** | 2026-08-30 | Inverte a ordenação cronológica para exibir a transação mais recente primeiro; datas inválidas permanecem no final; adiciona teste entre meses e anos diferentes |
 | **3.2.0** | 2026-08-30 | **Ordenação cronológica** das transações (mais antiga → mais recente) via `_ordenar_transacoes_por_data` e `_parse_data_para_ordenacao`; mantidos todos filtros, dedup e regras de layout |
 | **3.1.0** | 2026-08-30 | Parser layout (colunas), ignora caixinha completa, 8 testes, frontend tabela |
 | 3.0.0 | 2026-08-30 | Parser multi-linha, ignora saldos/reservas, junta descrições quebradas |

@@ -1,9 +1,28 @@
 import unittest
 
-from api.index import _extrair_transacoes_layout, extrair_e_organizar_dados
+from api.index import (
+    _extrair_transacoes_layout,
+    _ordenar_transacoes_por_data,
+    extrair_e_organizar_dados,
+)
 
 
 class ExtratoParserTests(unittest.TestCase):
+    def test_ordena_da_data_mais_recente_para_a_mais_antiga(self):
+        transacoes = [
+            {"Data": "01-01-2025"},
+            {"Data": "Não identificada"},
+            {"Data": "31-12-2025"},
+            {"Data": "01-01-2026"},
+        ]
+
+        resultado = _ordenar_transacoes_por_data(transacoes)
+
+        self.assertEqual(
+            [transacao["Data"] for transacao in resultado],
+            ["01-01-2026", "31-12-2025", "01-01-2025", "Não identificada"],
+        )
+
     def test_ignora_resumos_saldos_e_movimentacoes_de_reserva(self):
         texto = """
         EXTRATO DE CONTA

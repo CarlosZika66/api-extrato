@@ -1,6 +1,8 @@
 import re
 import os
 import unicodedata
+from datetime import datetime
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -190,8 +192,6 @@ def _limpar_descricao(descricao: str) -> str:
     return descricao.strip(" -|:;")
 
 
-from datetime import datetime
-
 def _normalizar_data(data: str) -> str:
     somente_digitos = re.sub(r"\D", "", data)
     if len(somente_digitos) == 8:
@@ -206,9 +206,9 @@ def _parse_data_para_ordenacao(data: str) -> datetime:
     """Converte string DD-MM-YYYY para datetime para ordenação segura."""
     try:
         return datetime.strptime(data, "%d-%m-%Y")
-    except ValueError:
-        # Fallback para datas malformadas - coloca no final
-        return datetime.max
+    except (TypeError, ValueError):
+        # Na ordenação decrescente, datetime.min mantém datas inválidas no final.
+        return datetime.min
 
 
 def _normalizar_valor(valor: str) -> str:
@@ -587,10 +587,11 @@ def _extrair_transacoes_simples(texto_movimentos: str):
 
 
 def _ordenar_transacoes_por_data(transacoes: list[dict]) -> list[dict]:
-    """Ordena transações por data (mais antiga primeiro)."""
+    """Ordena transações por data (mais recente primeiro)."""
     return sorted(
         transacoes,
-        key=lambda t: _parse_data_para_ordenacao(t.get("Data", ""))
+        key=lambda t: _parse_data_para_ordenacao(t.get("Data", "")),
+        reverse=True,
     )
 
 
@@ -602,7 +603,7 @@ def extrair_e_organizar_dados(texto: str):
     if not transacoes:
         transacoes = _extrair_transacoes_simples(texto_movimentos)
 
-    # Ordena cronologicamente (mais antiga para mais recente)
+    # Ordena cronologicamente (mais recente para mais antiga)
     return _ordenar_transacoes_por_data(transacoes)
 
 @app.post("/processar-pdf")
