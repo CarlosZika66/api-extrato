@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="API Extrato Bancário",
     description="Extrai transações de extratos PDF (Mercado Pago) e retorna JSON estruturado",
-    version="3.3.0",
+    version="3.4.0",
 )
 
 # Configuração de CORS
@@ -157,13 +157,125 @@ def _sem_acentos(valor: str) -> str:
 def _eh_cabecalho_da_tabela(linha: str) -> bool:
     """Detecta se a linha é o cabeçalho da tabela de movimentos."""
     linha_normalizada = _sem_acentos(linha).casefold().strip()
+    # Cabeçalho pode estar em uma linha ou split em duas
+    tem_data = linha_normalizada.startswith("data")
+    tem_descri = "descri" in linha_normalizada
+    tem_opera = "opera" in linha_normalizada
+    tem_valor = "valor" in linha_normalizada
+    tem_saldo = "saldo" in linha_normalizada
+    return tem_data and tem_descri and tem_opera and tem_valor and tem_saldo
+
+
+def _eh_linha_cabecalho_split(linha_atual: str, linha_proxima: str) -> bool:
+    """Detecta se duas linhas consecutivas formam o cabeçalho split."""
+    atual = _sem_acentos(linha_atual).casefold().strip()
+    proxima = _sem_acentos(linha_proxima).casefold().strip()
+    combinada = atual + " " + proxima
     return (
-        linha_normalizada.startswith("data")
-        and "descri" in linha_normalizada
-        and "opera" in linha_normalizada
-        and "valor" in linha_normalizada
-        and "saldo" in linha_normalizada
+        combinada.startswith("data")
+        and "descri" in combinada
+        and "opera" in combinada
+        and "valor" in combinada
+        and "saldo" in combinada
     )
+
+
+def _detectar_colunas_tabela(linha_cabecalho: str) -> Optional[dict]:
+    """
+    Detecta as posições (início/fim) das colunas a partir do cabeçalho da tabela.
+    Retorna dict com: data, descricao, id_operacao, valor, saldo.
+    Usa o cabeçalho com acentos removidos e busca por palavras-chave.
+    """
+    # Junta cabeçalho + possíveis continuações (cabeçalho pode estar split)
+    linhas_cabecalho = [linha_cabecalho]
+
+    # Normaliza sem acentos para busca robusta
+    cabecalho = _sem_acentos(linha_cabecalho)
+
+    palavras = {
+        "data": "data",
+        "descricao": "descri",
+        "id_operacao": "id da",
+        "valor": "valor",
+        "saldo": "saldo",
+    }
+
+    posicoes = {}
+    for chave, palavra in palavras.items():
+        idx = cabecalho.casefold().find(palavra)
+        if idx >= 0:
+            posicoes[chave] = idx
+
+    if len(posicoes) < 4:  # Precisa pelo menos data, descricao, valor, saldo
+        return None
+
+    # Ordena por posição para determinar limites
+    itens_ordenados = sorted(posicoes.items(), key=lambda x: x[1])
+
+    colunas = {}
+    for i, (chave, inicio) in enumerate(itens_ordenados):
+        if i + 1 < len(itens_ordenados):
+            fim = itens_ordenados[i + 1][1]
+        else:
+            fim = len(linha_cabecalho)
+        colunas[chave] = (inicio, fim)
+
+    return colunas
+
+
+def _extrair_coluna_layout(linhas: list, inicio: int, fim: int) -> str:
+    """
+    Extrai o conteúdo de uma coluna de múltiplas linhas de layout.
+    Junta os fragmentos de cada linha (removendo espaços duplicados).
+    """
+    partes = []
+    for linha in linhas:
+        if inicio >= len(linha):
+            continue
+        trecho = linha[inicio:min(fim, len(linha))].strip()
+        if trecho:
+            partes.append(trecho)
+    return " ".join(partes)
+
+
+def _extrair_coluna_layout_data(linhas: list, inicio: int, fim: int) -> str:
+    """
+    Extrai o conteúdo da coluna de DATA, removendo letras que possam ter
+    vazado de colunas adjacentes (ex: "05-08-       P" -> "05-08-").
+    Mantém apenas dígitos e separadores de data (- e /).
+    """
+    partes = []
+    for linha in linhas:
+        if inicio >= len(linha):
+            continue
+        trecho = linha[inicio:min(fim, len(linha))]
+        trecho = re.sub(r"[^\d/-]", "", trecho).strip(" -/")
+        if trecho:
+            partes.append(trecho)
+    return "".join(partes)
+
+
+def _extrair_descricao_fragmentos(linhas: list, id_pos_absoluta: int) -> str:
+    """
+    Extrai a descrição de cada linha da transação, removendo a data
+    (ou continuação de data, ex: "2026") e normalizando espaços.
+    Lid com descrições que cruzam quebras de página (alinhamento variável).
+    """
+    partes = []
+    for linha in linhas:
+        trecho = linha[:id_pos_absoluta]
+        # Remove data completa (DD-MM-YYYY ou DD/MM/YYYY) se presente
+        trecho = re.sub(r"\d{2}[-/]\d{2}[-/]\d{4}", " ", trecho)
+        # Remove data parcial no início da linha (ex: "07-08-", "07-08-2026")
+        trecho = re.sub(r"^\s*\d{2}[-/]\d{2}[-/]?\d{0,4}", " ", trecho)
+        # Remove continuação de data (YYYY solto no início da linha)
+        trecho = re.sub(r"^\s*\d{4}\s+", " ", trecho)
+        # Remove datas compactas (DDMMYYYY) no início
+        trecho = re.sub(r"^\s*\d{8}\s+", " ", trecho)
+        trecho = trecho.strip()
+        if trecho:
+            partes.append(trecho)
+    return " ".join(partes)
 
 
 def _eh_inicio_de_rodape(linha: str) -> bool:
@@ -197,15 +309,13 @@ def _eh_linha_informativa(linha: str) -> bool:
         "cpf/cnpj:",
         "periodo:",
         "período:",
+        "resumo:",
         "saldo inicial:",
         "saldo final:",
         "entradas:",
         "saidas:",
         "saídas:",
         "detalhe dos movimentos",
-        "total de entradas",
-        "total de saidas",
-        "total de saídas",
     )
     return linha_normalizada.startswith(prefixos_informativos)
 
@@ -293,10 +403,17 @@ def _corrigir_texto_ocr(texto: str) -> str:
         (r"\b[vm]oto\b", "MOTO"),
         (r"\(1o\s+DE\s+GAS\s+LTDA", "COMERCIO DE GAS LTDA"),
         # Ruídos conhecidos
-        (r"\bSUTIL\b", ""),
+        # NOTA: "SUTIL" NÃO é removido - é um sobrenome legítimo em muitos extratos
+        # Palavras quebradas por OCR em colunas (junta fragmentos)
+        (r"\bPagament\s+o\b", "Pagamento"),
+        (r"\b[Pp]agament\b", "Pagamento"),
+        (r"\bRendimen\s+tos\b", "Rendimentos"),
+        (r"\bNASCIME\s+NTO\b", "NASCIMENTO"),
+        (r"\bEmpr\S*sti\s+mos\b", "Empréstimos"),
+        (r"\bConceica\s+o\b", "Conceicao"),
+        (r"\bDescri\s*\n?\s*[çc]?ao\b", "Descrição"),
         # Normalizações de prefixos conhecidos (DEPOIS das correções acima)
         (r"^PARCELA\s+", ""),  # Remove "PARCELA" apenas no INÍCIO da string
-        # Não normaliza "PAGAMENTO DE" para preservar "de parcela", "de conta", etc.
     )
     for padrao, substituicao in correcoes:
         texto = re.sub(padrao, substituicao, texto, flags=re.IGNORECASE)
@@ -391,7 +508,13 @@ def _reposicionar_inicio_da_descricao(descricao: str) -> str:
     Ex: "12345678901 PIX RECEBIDO JOAO" -> "PIX RECEBIDO JOAO"
     """
     descricao = _corrigir_texto_ocr(descricao)
-    descricao_normalizada = _sem_acentos(descricao).casefold()
+    descricao_normalizada = _sem_acentos(descricao).casefold().strip()
+
+    # Se a descrição JÁ começa com um prefixo conhecido (mesmo que parcialmente
+    # quebrado por OCR, ex: "Pagament o Cartão" -> "pagament o"), não reposiciona.
+    if _comeca_com_prefixo_transacao(descricao_normalizada):
+        return descricao
+
     posicoes = [
         descricao_normalizada.find(prefixo)
         for prefixo in PREFIXOS_DE_TRANSACAO
@@ -415,10 +538,30 @@ def _reposicionar_inicio_da_descricao(descricao: str) -> str:
     return descricao_principal
 
 
+def _comeca_com_prefixo_transacao(descricao_normalizada: str) -> bool:
+    """
+    Verifica se a descrição começa com um prefixo de transação conhecido.
+    Considera também prefixos parcialmente quebrados por OCR (ex: "pagament o").
+    """
+    descricao_compacta = descricao_normalizada.replace(" ", "")
+    for prefixo in PREFIXOS_DE_TRANSACAO:
+        prefixo_compacto = prefixo.replace(" ", "")
+        # Prefixo completo no início
+        if descricao_normalizada.startswith(prefixo):
+            return True
+        # Prefixo quebrado por espaço (ex: "pagament o" -> "pagamento")
+        if descricao_compacta.startswith(prefixo_compacto):
+            return True
+        # Prefixo com OCR parcial (ex: "pagament" sem o "o" final)
+        if len(prefixo) >= 6 and descricao_normalizada.startswith(prefixo[:6]):
+            return True
+    return False
+
+
 # ==================== PARSER MODO LAYOUT (COLUNAS) ====================
 
 def _extrair_linha_layout(linha: str, data_anterior: Optional[str]):
-    """Extrai uma transação de uma linha no modo layout (colunas preservadas)."""
+    """Extrai uma transação de uma linha no modo layout (colunas preservadas) - formato legado (tudo em uma linha)."""
     id_match = PADRAO_ID_LAYOUT.search(linha)
     if not id_match:
         return None
@@ -490,8 +633,296 @@ def _limpar_fragmento_layout(linha: str) -> str:
     return linha
 
 
+def _extrair_transacoes_layout_tabela(texto_layout: str):
+    """
+    Parser para layout em formato de tabela (colunas), onde cada transação 
+    ocupa múltiplas linhas (data, descrição, ID, valor, saldo em colunas).
+    Usa posições de coluna detectadas pelo cabeçalho.
+    """
+    transacoes = []
+    ids_encontrados = set()
+    
+    linhas = texto_layout.splitlines()
+    
+    # Encontra o cabeçalho da tabela e as posições das colunas
+    # O cabeçalho pode estar em uma linha OU split em duas
+    colunas = None
+    inicio_dados = 0
+    for i, linha in enumerate(linhas):
+        if _eh_cabecalho_da_tabela(linha):
+            colunas = _detectar_colunas_tabela(linha)
+            inicio_dados = i + 1
+            break
+        # Cabeçalho split: a primeira linha já contém data/descri/id/valor/saldo
+        if i + 1 < len(linhas) and _eh_linha_cabecalho_split(linha, linhas[i + 1]):
+            colunas = _detectar_colunas_tabela(linha)
+            inicio_dados = i + 2
+            break
+    
+    if not colunas:
+        return transacoes
+    
+    # Normaliza colunas para nomes simples
+    pos_data = colunas.get("data", (0, 14))
+    pos_desc = colunas.get("descricao", (15, 29))
+    pos_id = colunas.get("id_operacao", (29, 44))
+    pos_valor = colunas.get("valor", (44, 58))
+    
+    # Processa a partir do início dos dados
+    i = inicio_dados
+    while i < len(linhas):
+        linha = linhas[i].rstrip()
+        linha_limpa = linha.strip()
+        
+        if not linha_limpa:
+            i += 1
+            continue
+            
+        # Verifica rodapé / quebra de página
+        if _eh_inicio_de_rodape(linha_limpa):
+            break
+        if linha_limpa == MARCADOR_QUEBRA_PAGINA:
+            i += 1
+            continue
+        
+        # Pula linhas informativas (resumo, período, etc.)
+        if _eh_linha_informativa(linha_limpa):
+            i += 1
+            continue
+        
+        # Detecta início de transação: coluna de data contém início de data
+        # (considerando que páginas podem ter alinhamento diferente)
+        eh_inicio = _coluna_data_e_inicio_de_transacao(linha, pos_data)
+        if not eh_inicio:
+            offset_detectado = _encontrar_offset_coluna_data(linha, pos_data)
+            if offset_detectado is not None:
+                linha_ajustada = _ajustar_offset(linha, offset_detectado)
+                eh_inicio = _coluna_data_e_inicio_de_transacao(linha_ajustada, pos_data)
+        
+        if not eh_inicio:
+            i += 1
+            continue
+        
+        # Coleta todas as linhas da transação (incluindo continuações que
+        # cruzam quebras de página, ex: "Márcia" + "Elaine Sutil").
+        linhas_transacao = [linha]
+        i += 1
+        
+        while i < len(linhas):
+            prox = linhas[i].rstrip()
+            prox_limpa = prox.strip()
+            
+            if not prox_limpa:
+                i += 1
+                continue
+                
+            if _eh_inicio_de_rodape(prox_limpa):
+                break
+            
+            # Quebra de página: não para aqui, apenas pula o marcador e
+            # continua coletando (a descrição pode continuar na próxima página).
+            if prox_limpa == MARCADOR_QUEBRA_PAGINA:
+                i += 1
+                continue
+            
+            # Se a próxima linha começa nova transação, para aqui
+            if _eh_linha_informativa(prox_limpa):
+                i += 1
+                continue
+
+            # Pula números de página soltos (ex: "12113" = "12/13" sem barra)
+            if re.fullmatch(r"\d{2,}", prox_limpa):
+                i += 1
+                continue
+            
+            eh_prox_inicio = _coluna_data_e_inicio_de_transacao(prox, pos_data)
+            if not eh_prox_inicio:
+                offset_prox = _encontrar_offset_coluna_data(prox, pos_data)
+                if offset_prox is not None:
+                    prox_ajustada = _ajustar_offset(prox, offset_prox)
+                    eh_prox_inicio = _coluna_data_e_inicio_de_transacao(prox_ajustada, pos_data)
+            
+            if eh_prox_inicio:
+                break
+            
+            linhas_transacao.append(prox)
+            i += 1
+        
+        # Processa as linhas coletadas por posição de coluna
+        transacao = _processar_linhas_tabela_por_coluna(
+            linhas_transacao, pos_data, pos_desc, pos_id, pos_valor
+        )
+        if transacao:
+            descricao = transacao["descricao"]
+            id_operacao = transacao["id_operacao"]
+            valor_bruto = transacao["valor_bruto"]
+            
+            if (
+                descricao
+                and id_operacao not in ids_encontrados
+                and not _deve_ignorar_descricao(descricao)
+            ):
+                ids_encontrados.add(id_operacao)
+                transacoes.append(
+                    _montar_transacao(
+                        transacao["data"],
+                        _reposicionar_inicio_da_descricao(descricao),
+                        id_operacao,
+                        _normalizar_valor_layout(valor_bruto, descricao)
+                    )
+                )
+    
+    return transacoes
+
+
+def _coluna_data_e_inicio_de_transacao(linha: str, pos_data: tuple) -> bool:
+    """Verifica se a coluna de data da linha contém o início de uma data (nova transação)."""
+    inicio, fim = pos_data
+    trecho_data = linha[inicio:fim].strip()
+    if not trecho_data:
+        return False
+    # Aceita: "01-08-", "01/08/", "01-08-2026", "01082026", "01-08"
+    return bool(re.match(r"^\d{2}[-/]\d{2}([-/]|\s*\d{2}|\s*\d{4}|)", trecho_data))
+
+
+def _encontrar_offset_coluna_data(linha: str, pos_data: tuple) -> int:
+    """
+    Encontra o deslocamento da coluna de data na linha.
+    Cada página do PDF pode ter alinhamento ligeiramente diferente.
+    Retorna 0 se a data está na posição esperada, ou o deslocamento (ex: -1).
+    """
+    inicio, fim = pos_data
+    esperado = linha[inicio:fim].strip()
+
+    # Se já está na posição esperada, retorna 0
+    if re.match(r"^\d{2}[-/]\d{2}", esperado):
+        return 0
+
+    # Procura o padrão de data nos primeiros 30 caracteres da linha
+    trecho_linha = linha[:30]
+    m = re.search(r"(?<!\d)\d{2}[-/]\d{2}", trecho_linha)
+    if m:
+        return m.start() - inicio
+
+    return None
+
+
+def _ajustar_offset(linha: str, offset: int) -> str:
+    """Ajusta o offset da linha (adiciona ou remove espaço à esquerda)."""
+    if offset is None or offset == 0:
+        return linha
+    if offset < 0:
+        # Linha precisa de espaço à esquerda (data começa mais cedo)
+        return " " * (-offset) + linha
+    # Linha tem espaço extra à esquerda
+    return linha[offset:]
+
+
+def _processar_linhas_tabela_por_coluna(
+    linhas: list, pos_data: tuple, pos_desc: tuple, pos_id: tuple, pos_valor: tuple
+):
+    """
+    Extrai campos de uma transação separando por posição de coluna.
+    Detecta dinamicamente a posição do ID e do valor na primeira linha,
+    porque páginas diferentes do PDF podem ter alinhamento ligeiramente diferente.
+    """
+    if not linhas:
+        return None
+
+    # Detecta o offset pela primeira linha (que contém a data)
+    offset = _encontrar_offset_coluna_data(linhas[0], pos_data)
+    if offset is None:
+        return None
+
+    # Aplica offset a todas as linhas
+    linhas_ajustadas = [_ajustar_offset(linha, offset) for linha in linhas]
+    primeira = linhas_ajustadas[0]
+
+    # Extrai data: apenas das primeiras 2 linhas (a data ocupa no máximo 2 linhas:
+    # "DD-MM-" + "YYYY"). Linhas de continuação da descrição podem vazar para a coluna,
+    # por isso removemos letras (mantém só dígitos e separadores).
+    data_raw = _extrair_coluna_layout_data(linhas_ajustadas[:2], pos_data[0], pos_data[1])
+    data = _data_de_fragmentos(data_raw)
+    if not data:
+        return None
+
+    # Detecta dinamicamente as posições de ID e valor na primeira linha.
+    # A data fica nos primeiros ~10 caracteres; o ID é o primeiro bloco
+    # de 8+ dígitos após a data (pode estar em posições diferentes conforme
+    # o tamanho da descrição e o alinhamento da página).
+    m_id = re.search(r"(?<!\d)\d{8,}(?!\d)", primeira[10:])
+    if not m_id:
+        return None
+    id_pos_absoluta = 10 + m_id.start()
+
+    # Encontra o valor: primeiro número (com sinal) após o ID
+    trecho_apos_id = primeira[id_pos_absoluta + 8:]
+    m_valor = re.search(r"-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+\.\d{2}", trecho_apos_id)
+    if not m_valor:
+        return None
+    valor_pos_absoluta = id_pos_absoluta + 8 + m_valor.start()
+    valor_raw = m_valor.group(0)
+    if "R$" not in valor_raw.upper():
+        valor_raw = "R$ " + valor_raw
+
+    # Extrai o ID completo juntando fragmentos de todas as linhas
+    # na posição da coluna ID (posição detectada na primeira linha).
+    # Limita às primeiras 3 linhas (ID raramente ocupa mais que 2).
+    id_raw = _extrair_coluna_layout(linhas_ajustadas[:3], id_pos_absoluta, valor_pos_absoluta)
+    id_sem_espacos = re.sub(r"\s+", "", id_raw)
+    # Remove qualquer coisa que não seja dígito (fragmentos de valores que vazaram)
+    id_digitos = re.sub(r"\D", "", id_sem_espacos)
+    id_match = PADRAO_ID_LAYOUT.search(id_digitos)
+    if not id_match:
+        return None
+    id_operacao = id_match.group(1)
+
+    # Extrai a descrição: para cada linha, remove a data/continuação de data
+    # e extrai o fragmento até o início do ID. Isso lida com descrições que
+    # cruzam quebras de página (com alinhamento ligeiramente diferente).
+    descricao = _extrair_descricao_fragmentos(linhas_ajustadas, id_pos_absoluta)
+    descricao = _limpar_descricao(descricao)
+    descricao = _corrigir_texto_ocr(descricao)
+    descricao = _reposicionar_inicio_da_descricao(descricao)
+
+    if not descricao:
+        return None
+
+    return {
+        "data": data,
+        "descricao": descricao,
+        "id_operacao": id_operacao,
+        "valor_bruto": valor_raw,
+    }
+
+
+def _data_de_fragmentos(data_sem_espacos: str) -> Optional[str]:
+    """Converte fragmentos de data (ex: '01-08-2026') para DD-MM-YYYY."""
+    if not data_sem_espacos:
+        return None
+    data_match = PADRAO_DATA_LAYOUT.search(data_sem_espacos)
+    if data_match:
+        data_str = data_match.group(1)
+        if len(data_str) == 8 and data_str.isdigit():
+            return f"{data_str[:2]}-{data_str[2:4]}-{data_str[4:]}"
+        return _normalizar_data(data_str)
+    return None
+
+
 def _extrair_transacoes_layout(texto_layout: str):
-    """Parser principal para modo layout (colunas)."""
+    """Parser principal para modo layout - tenta ambos formatos."""
+    # Primeiro tenta o formato tabela (multi-linha por transação)
+    transacoes = _extrair_transacoes_layout_tabela(texto_layout)
+    
+    # Se não encontrou nada, tenta o formato legado (uma linha por transação)
+    if not transacoes:
+        transacoes = _extrair_transacoes_layout_legado(texto_layout)
+    
+    return transacoes
+
+
+def _extrair_transacoes_layout_legado(texto_layout: str):
+    """Parser legado para formato onde cada transação está em uma linha."""
     transacoes = []
     ids_encontrados = set()
     transacao_atual = None
@@ -545,7 +976,7 @@ def _extrair_transacoes_layout(texto_layout: str):
 
         linha_normalizada = _sem_acentos(linha_limpa).casefold()
         
-        # Início da seção de movimentos - aceita tanto "DETALHE DOS MOVIMENTOS" quanto cabeçalho da tabela
+        # Início da seção de movimentos
         if "detalhe dos movimentos" in linha_normalizada or _eh_cabecalho_da_tabela(linha_limpa):
             dentro_dos_movimentos = True
             fragmentos_pendentes.clear()
@@ -576,12 +1007,11 @@ def _extrair_transacoes_layout(texto_layout: str):
             linhas_em_branco = 0
             continue
 
-        # Linha de continuação de descrição (indentada ou logo após transação)
+        # Linha de continuação
         fragmento = _limpar_fragmento_layout(linha_limpa)
         if not fragmento:
             continue
 
-        # Se a linha começa com espaço/tab (indentada), é continuação da transação atual
         eh_continuacao = linha.startswith((" ", "\t")) or (transacao_atual and linhas_em_branco == 0)
         
         if fragmentos_pendentes:
@@ -845,4 +1275,4 @@ async def processar_pdf(file: UploadFile = File(...)):
 @app.get("/health")
 async def health_check():
     """Health check para monitoramento."""
-    return {"status": "ok", "version": "3.3.0"}
+    return {"status": "ok", "version": "3.4.0"}

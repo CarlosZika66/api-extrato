@@ -1,6 +1,6 @@
 # API Extrato - Documentação do Projeto
 
-> **Versão:** 3.3.0
+> **Versão:** 3.4.0
 > **Última atualização:** 2026-08-30
 > **Status:** Produção (Vercel)
 
@@ -57,7 +57,7 @@ api-extrato/
 ├── vercel.json           # Config deploy Vercel (Python)
 ├── requirements.txt      # Dependências Python
 ├── tests/
-│   └── test_parser.py    # 9 testes unitários (pytest/unittest)
+│   └── test_parser.py    # 10 testes unitários (pytest/unittest)
 └── PROJECT.md            # Este arquivo
 ```
 
@@ -117,7 +117,7 @@ cd api-extrato
 python -m unittest discover -s tests -v
 ```
 
-**9 testes cobrindo:**
+**10 testes cobrindo:**
 - Ordena datas da mais recente para a mais antiga, incluindo meses/anos diferentes
 - Ignora saldos/resumos/caixinha
 - Junta descrições multi-linha
@@ -127,6 +127,7 @@ python -m unittest discover -s tests -v
 - Layout: separa transações em colunas
 - Layout: reorganiza descrição após valores
 - Layout: não anexa número de página
+- **Layout tabela multi-linha:** data/ID/descrição/valor split em colunas (formato real do pypdf)
 
 ---
 
@@ -154,6 +155,7 @@ uvicorn api.index:app --reload --port 8000
 
 | Versão | Data | Mudanças |
 |--------|------|----------|
+| **3.4.0** | 2026-08-30 | **Parser tabela multi-linha** (`_extrair_transacoes_layout_tabela`): extrai por posição de coluna com detecção dinâmica de offset por página; lida com data/ID/descrição/valor split em múltiplas linhas; descrições que cruzam quebras de página; filtro de números de página; correções OCR (`Rendimentos`, `Conceicao`, `Empréstimos`); **10 testes passando**; `pdfteste.pdf` agora processa 11 transações (antes 0) |
 | **3.3.0** | 2026-08-30 | **Melhorias no parser layout:** suporte a datas compactas (DDMMYYYY), detecção de cabeçalho de tabela como início, continuação de descrição em linhas indentadas; **Correções:** ID layout mínimo 10 dígitos (evita capturar datas), ordem de correções OCR preserva "Pagamento de parcela"; **Novo:** scoring balanceado, logging, health check `/health`, HTML de teste `teste-api.html` |
 | **3.2.1** | 2026-08-30 | Inverte a ordenação cronológica para exibir a transação mais recente primeiro; datas inválidas permanecem no final; adiciona teste entre meses e anos diferentes |
 | **3.2.0** | 2026-08-30 | **Ordenação cronológica** das transações (mais antiga → mais recente) via `_ordenar_transacoes_por_data` e `_parse_data_para_ordenacao`; mantidos todos filtros, dedup e regras de layout |

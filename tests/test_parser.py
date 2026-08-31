@@ -2,6 +2,7 @@ import unittest
 
 from api.index import (
     _extrair_transacoes_layout,
+    _extrair_transacoes_layout_tabela,
     _ordenar_transacoes_por_data,
     extrair_e_organizar_dados,
 )
@@ -177,6 +178,40 @@ Data Descrição ID da operação Valor Saldo
 
         self.assertEqual(len(transacoes), 2)
         self.assertEqual(transacoes[1]["Descrição"], "Pagamento Cartão de crédito")
+
+    def test_layout_tabela_colunas_com_data_e_id_split(self):
+        """Testa o formato de tabela real (pypdf layout mode) onde data, ID,
+        descrição e valor ocupam múltiplas linhas em colunas."""
+        texto = """
+ Data          Descrição      ID da          Valor (R$)    Saldo
+               Operação                      (R$)
+ 01-08-        Dinheiro       17067104       3,01          752,10
+ 2026          retirado       3989
+               PARCELA
+               MOTO
+ 01-08-        Pagamento      17156783       -750,00       2,10
+ 2026          Cartão de      5286
+               crédito
+ 02-08-        Pix            17170391       10,00         11,10
+ 2026          recebido       5076
+               thalia
+        """
+
+        transacoes = _extrair_transacoes_layout_tabela(texto)
+
+        # "Dinheiro retirado PARCELA MOTO" é caixinha - deve ser ignorado
+        self.assertEqual(len(transacoes), 2)
+        self.assertEqual(
+            transacoes[0]["Descrição"], "Pagamento Cartão de crédito"
+        )
+        self.assertEqual(transacoes[0]["ID da operação"], "171567835286")
+        self.assertEqual(transacoes[0]["Valor"], "R$ -750,00")
+        self.assertEqual(transacoes[0]["Data"], "01-08-2026")
+        self.assertEqual(
+            transacoes[1]["Descrição"], "Pix recebido thalia"
+        )
+        self.assertEqual(transacoes[1]["ID da operação"], "171703915076")
+        self.assertEqual(transacoes[1]["Valor"], "R$ 10,00")
 
 
 if __name__ == "__main__":
